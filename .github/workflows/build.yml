@@ -28,26 +28,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -f source-bundle.zip ] || [ -f source-bundle.b64 ]; then
+          if [ -f source-bundle.zip ] || [ -f source-bundle.b64 ] || compgen -G "source-bundle.*.b64" > /dev/null; then
             test "$GITHUB_REF_TYPE" = branch
             python3 - <<'PY'
           from pathlib import Path, PurePosixPath
-          import zipfile, base64, hashlib, json, shutil, tarfile, tempfile, urllib.request
+          import zipfile, base64, hashlib, io, json, lzma, shutil, tarfile, tempfile, urllib.request
           root = Path.cwd()
+          parts = sorted(Path('.').glob('source-bundle.*.b64'))
           if Path('source-bundle.b64').exists():
-              Path('source-bundle.zip').write_bytes(base64.b64decode(Path('source-bundle.b64').read_bytes()))
-          with zipfile.ZipFile('source-bundle.zip') as bundle:
-              for entry in bundle.infolist():
-                  path = PurePosixPath(entry.filename)
-                  if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0] != 'lite-toolbox':
-                      raise ValueError('Unexpected archive path')
-                  relative = Path(*path.parts[1:])
-                  if not relative.parts or relative.parts[0] in {'.git', '.github'} or entry.is_dir():
-                      continue
-                  target = root / relative
-                  target.parent.mkdir(parents=True, exist_ok=True)
-                  target.write_bytes(bundle.read(entry))
-                  target.chmod(((entry.external_attr >> 16) & 0o777) or 0o644)
+              payload = base64.b64decode(Path('source-bundle.b64').read_bytes())
+          elif parts:
+              payload = base64.b64decode(b''.join(p.read_bytes() for p in parts))
+          else:
+              payload = Path('source-bundle.zip').read_bytes()
+          if payload.startswith(bytes.fromhex('fd377a585a00')):
+              with tarfile.open(fileobj=io.BytesIO(lzma.decompress(payload))) as bundle:
+                  entries = [(e.name, bundle.extractfile(e).read(), e.mode) for e in bundle.getmembers() if e.isfile()]
+          else:
+              with zipfile.ZipFile(io.BytesIO(payload)) as bundle:
+                  entries = [(e.filename, bundle.read(e), (e.external_attr >> 16) & 0o777) for e in bundle.infolist() if not e.is_dir()]
+          for name, data, mode in entries:
+              path = PurePosixPath(name)
+              if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0] != 'lite-toolbox':
+                  raise ValueError('Unexpected archive path')
+              relative = Path(*path.parts[1:])
+              if not relative.parts or relative.parts[0] in {'.git', '.github'}:
+                  continue
+              target = root / relative
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(data)
+              target.chmod(mode or 0o644)
           upstream = json.loads(Path('vendor/UPSTREAM.json').read_text())
           if not Path('vendor/minipaint/index.html').exists():
               with urllib.request.urlopen(upstream['archive_url'], timeout=120) as response:
@@ -63,11 +73,11 @@ jobs:
                   shutil.copytree(checkout, 'vendor/minipaint')
               index = Path('vendor/minipaint/index.html')
               index.write_text(index.read_text().replace('<script src="dist/bundle.js"></script>', '<script src="/editor-adapter.js"></script>\n<script src="dist/bundle.js"></script>'))
-          Path('source-bundle.zip').unlink()
+          Path('source-bundle.zip').unlink(missing_ok=True)
           PY
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git rm --ignore-unmatch source-bundle.zip source-bundle.b64
+            git rm --ignore-unmatch source-bundle.zip source-bundle*.b64
             git add .
             git commit -m "Publish LiteToolbox v0.4 source"
             git push origin "HEAD:$GITHUB_REF_NAME"

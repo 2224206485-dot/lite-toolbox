@@ -21,17 +21,21 @@ jobs:
       source_sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
       - name: Initialize browsable source if a browser-uploaded bundle is present
         id: source
         shell: bash
         run: |
           set -euo pipefail
-          if [ -f source-bundle.zip ]; then
+          if [ -f source-bundle.zip ] || [ -f source-bundle.b64 ]; then
             test "$GITHUB_REF_TYPE" = branch
             python3 - <<'PY'
           from pathlib import Path, PurePosixPath
-          import zipfile
+          import zipfile, base64, hashlib, json, shutil, tarfile, tempfile, urllib.request
           root = Path.cwd()
+          if Path('source-bundle.b64').exists():
+              Path('source-bundle.zip').write_bytes(base64.b64decode(Path('source-bundle.b64').read_bytes()))
           with zipfile.ZipFile('source-bundle.zip') as bundle:
               for entry in bundle.infolist():
                   path = PurePosixPath(entry.filename)
@@ -44,10 +48,26 @@ jobs:
                   target.parent.mkdir(parents=True, exist_ok=True)
                   target.write_bytes(bundle.read(entry))
                   target.chmod(((entry.external_attr >> 16) & 0o777) or 0o644)
+          upstream = json.loads(Path('vendor/UPSTREAM.json').read_text())
+          if not Path('vendor/minipaint/index.html').exists():
+              with urllib.request.urlopen(upstream['archive_url'], timeout=120) as response:
+                  archive = response.read()
+              if hashlib.sha256(archive).hexdigest() != upstream['archive_sha256']:
+                  raise ValueError('Upstream archive changed; refusing an unverified source')
+              with tempfile.TemporaryDirectory() as folder:
+                  downloaded = Path(folder) / 'source.tar.gz'
+                  downloaded.write_bytes(archive)
+                  with tarfile.open(downloaded) as tar:
+                      tar.extractall(Path(folder) / 'extracted', filter='data')
+                  checkout = next((Path(folder) / 'extracted').iterdir())
+                  shutil.copytree(checkout, 'vendor/minipaint')
+              index = Path('vendor/minipaint/index.html')
+              index.write_text(index.read_text().replace('<script src="dist/bundle.js"></script>', '<script src="/editor-adapter.js"></script>\n<script src="dist/bundle.js"></script>'))
+          Path('source-bundle.zip').unlink()
           PY
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git rm source-bundle.zip
+            git rm --ignore-unmatch source-bundle.zip source-bundle.b64
             git add .
             git commit -m "Publish LiteToolbox v0.4 source"
             git push origin "HEAD:$GITHUB_REF_NAME"

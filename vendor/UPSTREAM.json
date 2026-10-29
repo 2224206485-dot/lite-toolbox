@@ -1,0 +1,12 @@
+{
+  "project": "miniPaint",
+  "repository": "https://github.com/viliusle/miniPaint",
+  "version": "4.14.3",
+  "retrieved": "2026-10-29",
+  "archive_url": "https://codeload.github.com/viliusle/miniPaint/tar.gz/refs/heads/master",
+  "archive_sha256": "7a0a6ff361c75f030622f24eb8186531690058c03fb71f5ae4250ec1a7d2e8b2",
+  "modifications": [
+    "index.html: load /editor-adapter.js before bundle.js. No upstream bundle rebuilt."
+  ],
+  "license": "MIT"
+}
